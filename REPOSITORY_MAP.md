@@ -1,27 +1,17 @@
-# 工科赛代码仓库地图
+# 仓库模块与历史
 
-## `main` 的职责
+| 分支 | 用途 |
+| --- | --- |
+| main | 仓库首页。底盘和视觉分别从各自模块分支接手。 |
+| [chassis](https://github.com/XCiscoding/Gong-Ke-Sai-FanKong-Robot/tree/chassis) | F407、X42S、麦轮运动、IMU 航向、厘米路线和停车。初始提交 1056527 已验证 Debug 构建与 ELF 调用链。 |
+| [vision](https://github.com/XCiscoding/Gong-Ke-Sai-FanKong-Robot/tree/vision) | F407 与 K230 的 TEXT TRACK 传输、脚本和协议。测试入口在该分支 README。 |
 
-`main` 是项目当前可复现的正式测试基线：它包含已经明确身份的 F407↔K230 TEXT TRACK 通讯闭包与其合同、脚本门禁和状态回执。
+机械臂源码随 F407 固件保留。独立的机械臂探针上位机在 [ZM-HostComputer](https://github.com/XCiscoding/ZM-HostComputer)。
 
-它不等于“实车已经通过”。实物结论必须由状态回执和项目任务看板的原始证据单独成立。
+旧快照和拆出的复用模块保留原名与提交，可从[标签页](https://github.com/XCiscoding/Gong-Ke-Sai-FanKong-Robot/tags)查找。
 
-## 模块分支
+- ZiMing/Motor、ZiMing/Vision 和 archive/YuXuan 保存历史协作快照。
+- archive/pbrobot-f6662ea 和 archive/pbrobot-worktree-20261121 保存两次 F407 归档。
+- reuse/ 下的六个标签保存距离换算、路线停车、IMU 航向、麦轮混控、STEP/DIR 计步和 X42S UART 的独立模块快照。
 
-| 分支 | 责任 | 状态 |
-| --- | --- | --- |
-| `main` | 当前统一测试基线 | 当前包含 TEXT TRACK 通讯闭包 |
-| `ZiMing/Vision` | F407↔K230 通讯与视觉传输开发线 | 与本次 main 基线同源 |
-| `ZiMing/Motor` | F407/X42S 底盘、路线和停车安全候选 | 独立候选；不因推送而表示已并入当前视觉测试 |
-| `YuXuan` | K230 相机识别历史/协作代码 | 已有远端分支；是否接入 main 需以当前协议与实测为门 |
-
-## 外部但相关的代码库
-
-`ZM-HostComputer` 是单独仓库，承担机械臂探针上位机；它不被复制进本仓库，也不复用为本次 USART2 视觉通讯证据。
-
-## 推进规则
-
-1. 新代码先进入所属模块分支并保留可复现检查。
-2. 进入 `main` 前，提交必须写明源文件身份、协议/构建检查及实物证据边界。
-3. 固件 HEX、ELF、BIN、缓存、临时记录不进入 Git；发布映像以哈希和可再生构建记录引用。
-4. 任务看板仍是现场动态状态真源；Git 提交记录的是可复现的代码与当时状态回执，不替代现场读数。
+协作从模块分支拉取；新改动可从对应模块另开分支。构建结果、烧录和实物表现分别记录。
