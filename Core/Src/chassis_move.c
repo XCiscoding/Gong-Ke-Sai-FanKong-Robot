@@ -35,7 +35,6 @@ static uint8_t BuildSegment(int16_t x_rpm, int16_t y_rpm,
     segment->speed_rpm = (float)((signed_speed < 0) ? -signed_speed
                                                     : signed_speed);
     segment->distance_cm = (float)distance_cm;
-    segment->target_heading_degrees = 0.0f;
     return 1U;
 }
 
@@ -50,25 +49,23 @@ uint8_t Chassis_MoveCm(int16_t x_rpm, int16_t y_rpm,
                        uint16_t distance_cm)
 {
     ChassisRouteSegment segment;
-    ChassisRouteResolvedSegment resolved;
-
     if (BuildSegment(x_rpm, y_rpm, distance_cm, &segment) == 0U) {
         return 0U;
     }
-    if (ChassisRoute_ResolveSegment(&segment, &resolved) !=
-        CHASSIS_ROUTE_RESOLVE_OK) {
-        return 0U;
-    }
-
-    ChassisRouteRunner_Init(&segment);
-    return 1U;
+    return ChassisRouteRunner_Init(&segment);
 }
 
 /**
  * @brief 推进当前路线运行器一次。
- * @return 无。
+ * @return 当前段仍在运行、正常完成或失败停止。
  */
-void Chassis_Service(void)
+ChassisMoveStatus Chassis_Service(void)
 {
     ChassisRouteRunner_Service();
+    if (chassis_route_runner_diag.state != CHASSIS_ROUTE_RUNNER_STOP_LATCHED) {
+        return CHASSIS_MOVE_IN_PROGRESS;
+    }
+    return (chassis_route_runner_diag.completed != 0U)
+        ? CHASSIS_MOVE_COMPLETE
+        : CHASSIS_MOVE_FAILED;
 }

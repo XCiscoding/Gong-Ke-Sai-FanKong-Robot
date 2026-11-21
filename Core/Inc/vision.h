@@ -36,6 +36,8 @@ typedef struct {
     VisionTarget target;
     uint8_t valid;
     uint16_t sequence;
+    /* Local identity; advances only when the link accepts a new data frame. */
+    uint32_t sample_id;
     int16_t dx;
     int16_t dy;
     int16_t angle_tenths;
@@ -54,7 +56,13 @@ extern volatile VisionObservation vision_latest;
 extern volatile VisionDiagnostics vision_diag;
 
 void Vision_Init(void);
+void Vision_EnableReceiveOnly(void);
 void Vision_Service(void);
+uint8_t Vision_RequestQr(void);
+uint8_t Vision_RequestTarget(void);
+uint8_t Vision_RequestTrack(void);
+uint8_t Vision_TakeQrReady(uint16_t *task_code);
+uint8_t Vision_IsLinkActive(void);
 uint8_t Vision_GetLatest(VisionObservation *observation);
 uint8_t Vision_IsFresh(uint32_t now_ms);
 void Vision_GetDiagnostics(VisionDiagnostics *diagnostics);

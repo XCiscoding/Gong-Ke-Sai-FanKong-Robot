@@ -6,33 +6,20 @@
 #include <math.h>
 
 static ChassisRouteSegment captured_segment;
-static ChassisRouteResolveStatus resolve_status = CHASSIS_ROUTE_RESOLVE_OK;
 static uint32_t init_calls;
 static uint32_t service_calls;
+static uint8_t init_result = 1U;
+volatile ChassisRouteRunnerDiagnostics chassis_route_runner_diag;
 
 /**
- * @brief 以可控结果替代路线解析器，并保留门面传入的路线段。
- * @param segment 待解析的路线段。
- * @param resolved 未参与本合同的解析结果缓冲区。
- * @return 测试指定的解析状态。
- */
-ChassisRouteResolveStatus ChassisRoute_ResolveSegment(
-    const ChassisRouteSegment *segment,
-    ChassisRouteResolvedSegment *resolved)
-{
-    (void)resolved;
-    captured_segment = *segment;
-    return resolve_status;
-}
-
-/**
- * @brief 记录门面是否把已验证路线交给运行器。
+ * @brief 记录门面是否把单轴路线交给运行器。
  * @param segment 待运行的路线段。
  */
-void ChassisRouteRunner_Init(const ChassisRouteSegment *segment)
+uint8_t ChassisRouteRunner_Init(const ChassisRouteSegment *segment)
 {
     captured_segment = *segment;
     init_calls++;
+    return init_result;
 }
 
 /**
@@ -64,7 +51,6 @@ int main(void)
     assert(captured_segment.direction == CHASSIS_ROUTE_X_POSITIVE);
     assert(NearlyEqual(captured_segment.speed_rpm, 50.0f));
     assert(NearlyEqual(captured_segment.distance_cm, 10.0f));
-    assert(NearlyEqual(captured_segment.target_heading_degrees, 0.0f));
 
     assert(Chassis_MoveCm(-40, 0, 15) == 1U);
     assert(captured_segment.direction == CHASSIS_ROUTE_X_NEGATIVE);
@@ -79,11 +65,17 @@ int main(void)
     assert(Chassis_MoveCm(10, 10, 10) == 0U);
     assert(Chassis_MoveCm(10, 0, 0) == 0U);
 
-    resolve_status = CHASSIS_ROUTE_RESOLVE_DIRECTION_UNVERIFIED;
+    init_result = 0U;
     assert(Chassis_MoveCm(-50, 0, 10) == 0U);
-    assert(init_calls == 4U);
+    assert(init_calls == 5U);
 
     Chassis_Service();
     assert(service_calls == 1U);
+    assert(Chassis_Service() == CHASSIS_MOVE_IN_PROGRESS);
+    chassis_route_runner_diag.state = CHASSIS_ROUTE_RUNNER_STOP_LATCHED;
+    chassis_route_runner_diag.completed = 1U;
+    assert(Chassis_Service() == CHASSIS_MOVE_COMPLETE);
+    chassis_route_runner_diag.completed = 0U;
+    assert(Chassis_Service() == CHASSIS_MOVE_FAILED);
     return 0;
 }

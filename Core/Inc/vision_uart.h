@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* F407 <-> K230D: USART2, PD5 TX / PD6 RX, 115200 8N1, 3.3 V logic. */
+/* F407 <-> K230D: USART6, PC6 TX / PC7 RX, 115200 8N1, 3.3 V logic. */
 #define VISION_UART_BAUDRATE 115200U
 
 typedef struct {

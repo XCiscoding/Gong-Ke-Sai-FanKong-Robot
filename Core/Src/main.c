@@ -29,12 +29,29 @@
 #include "imu_ms901m.h"
 #include "chassis.h"
 #include "chassis_heading.h"
-#elif APP_PROFILE_CM_ROUTE_X_POSITIVE
+#elif APP_PROFILE_CM_ROUTE_TEST || APP_PROFILE_VISION_DISTANCE_ALIGN
 #include "motor.h"
 #include "imu_ms901m.h"
 #include "chassis.h"
 #include "chassis_heading.h"
 #include "chassis_move.h"
+#if APP_PROFILE_CM_ROUTE_TEST || APP_PROFILE_VISION_DISTANCE_ALIGN
+#include "vision.h"
+#endif
+#if APP_PROFILE_VISION_DISTANCE_ALIGN
+#include "vision_controller.h"
+#endif
+#if APP_PROFILE_CM_ROUTE_TEST
+#include "mission.h"
+#endif
+#elif APP_PROFILE_PASSIVE_VISION_REPORT
+#include "vision.h"
+#include "vision_controller_observer.h"
+#elif APP_PROFILE_ARM_TUNE || APP_PROFILE_ARM_GRASP_CAPTURE
+#include "arm_tune.h"
+#if APP_PROFILE_ARM_GRASP_CAPTURE
+#include "arm_grasp_stage_panel.h"
+#endif
 #else
 #include "imu_ms901m.h"
 #include "step_motor.h"
@@ -75,9 +92,21 @@
 #define APP_CONSTANT_HEADING_HOLD_MARKER 0x484F4C44U
 #endif
 
-#if APP_PROFILE_CM_ROUTE_X_POSITIVE
-/** RAM中的活动画像标记：ASCII "CMX1"。 */
-#define APP_CM_ROUTE_X_POSITIVE_MARKER 0x434D5831U
+#if APP_PROFILE_CM_ROUTE_TEST || APP_PROFILE_VISION_DISTANCE_ALIGN
+/** RAM中的活动画像标记：ASCII "CMR1"。 */
+#define APP_CM_ROUTE_TEST_MARKER 0x434D5231U
+#endif
+
+#if APP_PROFILE_VISION_DISTANCE_ALIGN
+/* 距离对齐只允许小段纯X；实物结果返回前不扩大此限幅或速度。 */
+#define VISION_ALIGN_TOTAL_TIMEOUT_MS          8000U
+#define VISION_ALIGN_CENTER_CONFIRM_SAMPLES       3U
+#define VISION_ALIGN_X_SPEED_RPM                  50
+#define VISION_ALIGN_MAX_DISTANCE_CM               3U
+/* K230固定帧：dx=2*(474-M)。17px约1cm，所以1个dx约0.294mm。 */
+#define VISION_ALIGN_DX_TO_X_MM             0.29411765f
+#define VISION_ALIGN_ENTER_DEADBAND_DX              6U
+#define VISION_ALIGN_EXIT_DEADBAND_DX              10U
 #endif
 
 /* USER CODE END PD */
@@ -105,10 +134,28 @@ static uint32_t motor_test_state_started_at = 0U;
 #endif
 
 #if APP_PROFILE_IMU_SHORT_REGRESSION || APP_PROFILE_CONSTANT_HEADING_HOLD || \
-    APP_PROFILE_CM_ROUTE_X_POSITIVE
+    APP_PROFILE_CM_ROUTE_TEST || APP_PROFILE_VISION_DISTANCE_ALIGN
 #define APP_IMU_SHORT_REGRESSION_MARKER 0x494D5531U
 volatile uint32_t app_runtime_profile_marker = 0U;
 #endif
+
+#if APP_PROFILE_VISION_DISTANCE_ALIGN
+typedef enum
+{
+  VISION_ALIGN_BOOT_SAFE = 0U,
+  VISION_ALIGN_ACQUIRE,
+  VISION_ALIGN_MOVING,
+  VISION_ALIGN_CENTER_CONFIRM,
+  VISION_ALIGN_COMPLETE,
+  VISION_ALIGN_FAILED
+} VisionAlignState;
+
+static VisionController vision_align_controller;
+static VisionAlignState vision_align_state = VISION_ALIGN_BOOT_SAFE;
+static uint32_t vision_align_started_ms = 0U;
+static uint32_t vision_align_last_center_sample_id = 0U;
+static uint8_t vision_align_center_sample_count = 0U;
+#endif /* APP_PROFILE_VISION_DISTANCE_ALIGN */
 
 #if APP_PROFILE_CONSTANT_HEADING_HOLD
 /** 恒速HOLD一次性测试的运行状态；到达STOP_LATCHED后只允许复位重启。 */
@@ -328,7 +375,7 @@ static void ConstantHold_Init(void)
  * 只有ChassisHeading_Compute()产生新的10ms控制更新时，才通过
  * Chassis_MoveConstant()重新提交四轮恒频STEP命令。
  *
- * IMU未就绪、航向健康检查失败、35°保护线触发、调度超时或任一四轮提交
+ * IMU未就绪、航向健康检查失败、40°保护线触发、调度超时或任一四轮提交
  * 失败都会立即全停并锁存。正常运行满3秒同样全停，且绝不自动循环。
  */
 static void ConstantHold_Service(void)
@@ -416,6 +463,226 @@ static void ConstantHold_Service(void)
 }
 #endif
 
+#if APP_PROFILE_VISION_DISTANCE_ALIGN
+/**
+ * @brief 初始化路线前的视觉对齐闸门。
+ *
+ * 视觉收帧、协议校验和横向控制器分别由已有模块拥有；本函数只建立
+ * 任务层状态。此时全车保持停车，直到Service确认连续有效新帧。
+ */
+static void VisionAlign_Init(void)
+{
+  VisionControllerConfig config;
+
+  VisionController_GetDefaultConfig(&config);
+  config.raw_dx_bias = 0;
+  config.raw_dx_to_vehicle_mm = VISION_ALIGN_DX_TO_X_MM;
+  config.enter_deadband = VISION_ALIGN_ENTER_DEADBAND_DX;
+  config.exit_deadband = VISION_ALIGN_EXIT_DEADBAND_DX;
+  (void)VisionController_Init(&vision_align_controller, &config);
+  vision_align_state = VISION_ALIGN_BOOT_SAFE;
+  vision_align_started_ms = HAL_GetTick();
+  vision_align_last_center_sample_id = 0U;
+  vision_align_center_sample_count = 0U;
+  Chassis_Stop();
+}
+
+/**
+ * @brief 将控制器的已冻结粗物理X误差量化成一次有限厘米移动。
+ *
+ * error_mm的正负继承固定帧dx=2*(474-M)的纠偏方向：正值请求X+。
+ * 不足1cm的非零误差向远离零取整，距离始终限在3cm，不能演变成连续
+ * 速度控制。
+ */
+static uint8_t VisionAlign_BuildMove(const VisionControllerReport *report,
+                                     int16_t *x_rpm, uint16_t *distance_cm)
+{
+  int32_t signed_cm;
+
+  if ((report == 0) || (x_rpm == 0) || (distance_cm == 0) ||
+      report->reason != VISION_CONTROLLER_REASON_TRACKING)
+  {
+    return 0U;
+  }
+  if (report->error_mm > 0.0f)
+  {
+    signed_cm = (int32_t)((report->error_mm + 9.999f) / 10.0f);
+  }
+  else if (report->error_mm < 0.0f)
+  {
+    signed_cm = -(int32_t)(((-report->error_mm + 9.999f) / 10.0f));
+  }
+  else
+  {
+    return 0U;
+  }
+  if (signed_cm > (int32_t)VISION_ALIGN_MAX_DISTANCE_CM)
+    signed_cm = (int32_t)VISION_ALIGN_MAX_DISTANCE_CM;
+  else if (signed_cm < -(int32_t)VISION_ALIGN_MAX_DISTANCE_CM)
+    signed_cm = -(int32_t)VISION_ALIGN_MAX_DISTANCE_CM;
+  *x_rpm = (signed_cm > 0) ? VISION_ALIGN_X_SPEED_RPM : -VISION_ALIGN_X_SPEED_RPM;
+  *distance_cm = (uint16_t)((signed_cm > 0) ? signed_cm : -signed_cm);
+  return 1U;
+}
+
+/**
+ * @brief 将已验帧的视觉观测交给纯控制器；本函数不直接操作电机。
+ */
+static uint8_t VisionAlign_UpdateController(uint32_t now_ms,
+                                             VisionControllerReport *report,
+                                             uint32_t *sample_id)
+{
+  VisionObservation latest;
+  VisionControllerObservation observation;
+
+  if ((report == 0) || (sample_id == 0)) return 0U;
+  if (Vision_GetLatest(&latest) == 0U)
+  {
+    (void)VisionController_Update(&vision_align_controller, 1U, now_ms, 0, report);
+    *sample_id = 0U;
+    return 0U;
+  }
+
+  observation.sample_id = latest.sample_id;
+  observation.received_ms = latest.received_ms;
+  observation.dx = latest.dx;
+  observation.valid = latest.valid;
+  (void)VisionController_Update(&vision_align_controller, 1U, now_ms,
+                                &observation, report);
+  *sample_id = latest.sample_id;
+  return 1U;
+}
+
+/**
+ * @brief 执行STOP→连续新帧→有界纯X→连续居中确认→STOP的任务层状态机。
+ *
+ * 短暂失帧会立即停车并回到采集；总超时或连续运动超时均锁存失败，
+ * 不会继续路线，也不会自动重启。
+ */
+static void VisionAlign_Service(void)
+{
+  uint32_t now_ms = HAL_GetTick();
+  uint32_t sample_id = 0U;
+  uint8_t have_observation;
+  int16_t x_rpm;
+  uint16_t distance_cm;
+  ChassisMoveStatus move_status;
+  VisionControllerReport report;
+
+  if (vision_align_state == VISION_ALIGN_COMPLETE)
+  {
+    return;
+  }
+  if (vision_align_state == VISION_ALIGN_FAILED)
+  {
+    Chassis_Stop();
+    return;
+  }
+
+  have_observation = VisionAlign_UpdateController(now_ms, &report, &sample_id);
+  if ((uint32_t)(now_ms - vision_align_started_ms) > VISION_ALIGN_TOTAL_TIMEOUT_MS)
+  {
+    Chassis_Stop();
+    vision_align_state = VISION_ALIGN_FAILED;
+    return;
+  }
+
+  switch (vision_align_state)
+  {
+    case VISION_ALIGN_BOOT_SAFE:
+      Chassis_Stop();
+      vision_align_state = VISION_ALIGN_ACQUIRE;
+      break;
+
+    case VISION_ALIGN_ACQUIRE:
+      Chassis_Stop();
+      if ((have_observation != 0U) && (report.control_valid != 0U))
+      {
+        if (report.reason == VISION_CONTROLLER_REASON_CENTERED)
+        {
+          vision_align_center_sample_count = 0U;
+          vision_align_last_center_sample_id = 0U;
+          vision_align_state = VISION_ALIGN_CENTER_CONFIRM;
+        }
+        else if (report.reason == VISION_CONTROLLER_REASON_TRACKING)
+        {
+          if (VisionAlign_BuildMove(&report, &x_rpm, &distance_cm) == 0U ||
+              Chassis_MoveCm(x_rpm, 0, distance_cm) == 0U)
+          {
+            Chassis_Stop();
+            vision_align_state = VISION_ALIGN_FAILED;
+          }
+          else
+          {
+            vision_align_state = VISION_ALIGN_MOVING;
+          }
+        }
+      }
+      break;
+
+    case VISION_ALIGN_MOVING:
+      if ((have_observation == 0U) || (report.control_valid == 0U))
+      {
+        Chassis_Stop();
+        vision_align_state = VISION_ALIGN_ACQUIRE;
+      }
+      else
+      {
+        move_status = Chassis_Service();
+        if (move_status == CHASSIS_MOVE_FAILED)
+        {
+          Chassis_Stop();
+          vision_align_state = VISION_ALIGN_FAILED;
+        }
+        else if (move_status == CHASSIS_MOVE_COMPLETE)
+        {
+          Chassis_Stop();
+          VisionController_Reset(&vision_align_controller);
+          vision_align_state = VISION_ALIGN_ACQUIRE;
+        }
+      }
+      break;
+
+    case VISION_ALIGN_CENTER_CONFIRM:
+      Chassis_Stop();
+      if ((have_observation == 0U) || (report.control_valid == 0U))
+      {
+        vision_align_state = VISION_ALIGN_ACQUIRE;
+      }
+      else if (report.reason == VISION_CONTROLLER_REASON_TRACKING)
+      {
+        if (VisionAlign_BuildMove(&report, &x_rpm, &distance_cm) == 0U ||
+            Chassis_MoveCm(x_rpm, 0, distance_cm) == 0U)
+        {
+          Chassis_Stop();
+          vision_align_state = VISION_ALIGN_FAILED;
+        }
+        else
+        {
+          vision_align_state = VISION_ALIGN_MOVING;
+        }
+      }
+      else if (report.reason == VISION_CONTROLLER_REASON_CENTERED &&
+               sample_id != vision_align_last_center_sample_id)
+      {
+        vision_align_last_center_sample_id = sample_id;
+        ++vision_align_center_sample_count;
+        if (vision_align_center_sample_count >= VISION_ALIGN_CENTER_CONFIRM_SAMPLES)
+        {
+          Chassis_Stop();
+          vision_align_state = VISION_ALIGN_COMPLETE;
+        }
+      }
+      break;
+
+    default:
+      Chassis_Stop();
+      vision_align_state = VISION_ALIGN_FAILED;
+      break;
+  }
+}
+#endif
+
 /* USER CODE END 0 */
 
 /**
@@ -423,7 +690,7 @@ static void ConstantHold_Service(void)
  *
  * 一次性脉冲档只运行四路STEP/DIR/EN证明；IMU短回归档初始化同一电机
  * 后端后持续全停；恒速HOLD档只运行一次100 RPM测试；厘米路线档在IMU
- * 建零后以50 RPM运行一次已验证的物理X+候选并按有符号脉冲停车。
+ * 建零后按数据表顺序运行单轴厘米段，并在每段停车完成后才进入下一段。
  * 视觉、主动转向和USART3电机协议均与当前画像隔离。
  * @retval int 本嵌入式入口不返回。
   */
@@ -459,7 +726,7 @@ int main(void)
   Chassis_Init();
   app_runtime_profile_marker = APP_CONSTANT_HEADING_HOLD_MARKER;
   ConstantHold_Init();
-#elif APP_PROFILE_CM_ROUTE_X_POSITIVE
+#elif APP_PROFILE_CM_ROUTE_TEST
 
   if (Motor_Init() != HAL_OK)
   {
@@ -469,9 +736,46 @@ int main(void)
   ImuMs901m_Init();
   ChassisHeading_Init();
   Chassis_Init();
-  app_runtime_profile_marker = APP_CM_ROUTE_X_POSITIVE_MARKER;
+  app_runtime_profile_marker = APP_CM_ROUTE_TEST_MARKER;
+  Vision_Init();
+  Vision_EnableReceiveOnly();
 
-  if (Chassis_MoveCm(50, 0, 10) == 0U)
+  if (Mission_Init() == 0U)
+  {
+    Chassis_Stop();
+    Error_Handler();
+  }
+
+#elif APP_PROFILE_VISION_DISTANCE_ALIGN
+
+  if (Motor_Init() != HAL_OK)
+  {
+    Error_Handler();
+  }
+  Motor_StopAll();
+  ImuMs901m_Init();
+  ChassisHeading_Init();
+  Chassis_Init();
+  app_runtime_profile_marker = APP_CM_ROUTE_TEST_MARKER;
+  Vision_Init();
+  VisionAlign_Init();
+
+#elif APP_PROFILE_PASSIVE_VISION_REPORT
+  /* Passive report image: vision and UART4 diagnostics only, no motor or chassis init. */
+  Vision_Init();
+  VisionControllerObserver_Init();
+
+#elif APP_PROFILE_ARM_TUNE || APP_PROFILE_ARM_GRASP_CAPTURE
+  /* 机械臂调试画像只拥有I2C2/PCA9685；默认五关节均禁用，绝不自动动作。 */
+  if (ArmTune_Init() == 0U)
+  {
+    Error_Handler();
+  }
+#if APP_PROFILE_ARM_GRASP_CAPTURE
+  if (ArmGraspStagePanel_Request() == 0U)
+#else
+  if (ArmTune_RequestManualPose() == 0U)
+#endif
   {
     Error_Handler();
   }
@@ -513,10 +817,34 @@ int main(void)
     ImuMs901m_Service();
     ConstantHold_Service();
     HAL_Delay(1U);
-#elif APP_PROFILE_CM_ROUTE_X_POSITIVE
-    /* 物理X+厘米路线：IMU更新后，路线状态机倒数脉冲并统一停车锁存。 */
+#elif APP_PROFILE_CM_ROUTE_TEST
+    /* 纯路线只接收二维码结果，不发送模式帧或运行视觉对齐；路线状态机继续负责IMU建零、航向与超时停车。 */
     ImuMs901m_Service();
-    Chassis_Service();
+    Vision_Service();
+
+    if (Mission_Service() == MISSION_FAILED)
+    {
+      Chassis_Stop();
+      Error_Handler();
+    }
+    HAL_Delay(1U);
+#elif APP_PROFILE_VISION_DISTANCE_ALIGN
+    ImuMs901m_Service();
+    Vision_Service();
+    VisionAlign_Service();
+    if (vision_align_state == VISION_ALIGN_COMPLETE)
+    {
+      Chassis_Stop();
+    }
+    HAL_Delay(1U);
+#elif APP_PROFILE_PASSIVE_VISION_REPORT
+    /* Only observe K230 frames and emit the controller report; never command motion. */
+    Vision_Service();
+    VisionControllerObserver_Service(HAL_GetTick());
+    HAL_Delay(1U);
+#elif APP_PROFILE_ARM_TUNE || APP_PROFILE_ARM_GRASP_CAPTURE
+    /* 探测画像只服务单关节；抓球画像只服务阶段面板的掩码请求。 */
+    ArmTune_Service(HAL_GetTick());
     HAL_Delay(1U);
 #else
     /* 历史综合档：依次服务IMU、航向、可选视觉和旧MotorTest编排。 */

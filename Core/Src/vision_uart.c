@@ -35,47 +35,47 @@ void VisionUart_Init(void)
     rx_bytes = rx_overflow = uart_errors = tx_busy = 0U;
     tx_length = tx_position = 0U;
 
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_USART2_CLK_ENABLE();
-    gpio.Pin = GPIO_PIN_5 | GPIO_PIN_6;
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_USART6_CLK_ENABLE();
+    gpio.Pin = GPIO_PIN_6 | GPIO_PIN_7;
     gpio.Mode = GPIO_MODE_AF_PP;
     gpio.Pull = GPIO_PULLUP;
     gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gpio.Alternate = GPIO_AF7_USART2;
-    HAL_GPIO_Init(GPIOD, &gpio);
+    gpio.Alternate = GPIO_AF8_USART6;
+    HAL_GPIO_Init(GPIOC, &gpio);
 
-    USART2->CR1 = USART2->CR2 = USART2->CR3 = 0U;
-    USART2->BRR = (HAL_RCC_GetPCLK1Freq() + VISION_UART_BAUDRATE / 2U) /
+    USART6->CR1 = USART6->CR2 = USART6->CR3 = 0U;
+    USART6->BRR = (HAL_RCC_GetPCLK2Freq() + VISION_UART_BAUDRATE / 2U) /
                   VISION_UART_BAUDRATE;
-    USART2->CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_RXNEIE | USART_CR1_UE;
-    HAL_NVIC_SetPriority(USART2_IRQn, 2U, 0U);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    USART6->CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_RXNEIE | USART_CR1_UE;
+    HAL_NVIC_SetPriority(USART6_IRQn, 2U, 0U);
+    HAL_NVIC_EnableIRQ(USART6_IRQn);
 }
 
 void VisionUart_IRQHandler(void)
 {
-    uint32_t status = USART2->SR;
+    uint32_t status = USART6->SR;
     if (status & (USART_SR_RXNE | USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) {
-        uint8_t byte = (uint8_t)USART2->DR;
+        uint8_t byte = (uint8_t)USART6->DR;
         if (status & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE))
             uart_errors++;
         else
             PushReceivedByte(byte);
     }
-    if ((status & USART_SR_TXE) && (USART2->CR1 & USART_CR1_TXEIE)) {
+    if ((status & USART_SR_TXE) && (USART6->CR1 & USART_CR1_TXEIE)) {
         if (tx_position < tx_length)
-            USART2->DR = tx_buffer[tx_position++];
+            USART6->DR = tx_buffer[tx_position++];
         else {
-            USART2->CR1 &= ~USART_CR1_TXEIE;
+            USART6->CR1 &= ~USART_CR1_TXEIE;
             tx_length = tx_position = 0U;
         }
     }
 }
 
-/* The startup file dispatches the STM32 USART2 vector by this exact name.
+/* The startup file dispatches the STM32 USART6 vector by this exact name.
  * Keep the hardware interrupt entry here; the public driver API remains
  * VisionUart_IRQHandler() for the vision module. */
-void USART2_IRQHandler(void)
+void USART6_IRQHandler(void)
 {
     VisionUart_IRQHandler();
 }
@@ -118,7 +118,7 @@ uint8_t VisionUart_Send(const uint8_t *data, uint8_t length)
     for (index = 0U; index < length; index++) tx_buffer[index] = data[index];
     tx_length = length;
     tx_position = 0U;
-    USART2->CR1 |= USART_CR1_TXEIE;
+    USART6->CR1 |= USART_CR1_TXEIE;
     if (primask == 0U) __enable_irq();
     return 1U;
 }

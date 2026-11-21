@@ -9,6 +9,7 @@
 typedef enum {
     CHASSIS_ROUTE_RUNNER_BOOT_SAFE = 0U,
     CHASSIS_ROUTE_RUNNER_STABILIZE,
+    CHASSIS_ROUTE_RUNNER_START_RAMP,
     CHASSIS_ROUTE_RUNNER_RUN_ONCE,
     CHASSIS_ROUTE_RUNNER_STOP_LATCHED
 } ChassisRouteRunnerState;
@@ -18,10 +19,8 @@ typedef enum {
     CHASSIS_ROUTE_STOP_NONE = 0U,
     CHASSIS_ROUTE_STOP_COMPLETE,
     CHASSIS_ROUTE_STOP_INVALID_ARGUMENT,
-    CHASSIS_ROUTE_STOP_RESOLVE_FAILED,
     CHASSIS_ROUTE_STOP_IMU_NOT_READY,
     CHASSIS_ROUTE_STOP_HEADING_ARM,
-    CHASSIS_ROUTE_STOP_HEADING_TARGET,
     CHASSIS_ROUTE_STOP_HEADING_FAULT,
     CHASSIS_ROUTE_STOP_MOTOR_SUBMIT,
     CHASSIS_ROUTE_STOP_TIMEOUT
@@ -34,6 +33,7 @@ typedef struct {
     uint32_t resolve_status;
     uint32_t state_started_ms;
     uint32_t run_started_ms;
+    uint32_t ramp_started_ms;
     uint32_t expected_run_ms;
     uint32_t target_steps;
     int32_t progress_steps;
@@ -42,12 +42,16 @@ typedef struct {
     float target_distance_cm;
     float progress_cm;
     float last_heading_w_rpm;
+    float last_base_speed_scale;
 } ChassisRouteRunnerDiagnostics;
 
 extern volatile ChassisRouteRunnerDiagnostics chassis_route_runner_diag;
 
-/** @brief 复制一段路线定义并进入全停BOOT_SAFE；不会启动电机。 */
-void ChassisRouteRunner_Init(const ChassisRouteSegment *segment);
+/**
+ * @brief 校验并复制一段路线定义，随后进入全停BOOT_SAFE；不会启动电机。
+ * @return 1表示段已接受；0表示参数无效、路线解析失败或上一段尚未结束。
+ */
+uint8_t ChassisRouteRunner_Init(const ChassisRouteSegment *segment);
 
 /** @brief 非阻塞推进一次安全状态机；调用方负责先更新IMU。 */
 void ChassisRouteRunner_Service(void);

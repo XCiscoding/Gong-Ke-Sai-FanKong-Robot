@@ -50,7 +50,38 @@ static uint32_t ChassisRouteRunner_ExpectedRunMs(void)
         duration_ms > 4294967000.0f) {
         return 0U;
     }
+    duration_ms += (float)CHASSIS_ROUTE_START_RAMP_MS;
+    if (duration_ms > 4294967000.0f) {
+        return 0U;
+    }
     return (uint32_t)(duration_ms + 0.5f);
+}
+
+/** @brief 返回当前段的统一平移/航向比例，不更改目标STEP或坐标语义。 */
+static float ChassisRouteRunner_StartRampScale(uint32_t now)
+{
+    float elapsed_ratio;
+
+    if (chassis_route_runner_diag.state != CHASSIS_ROUTE_RUNNER_START_RAMP ||
+        CHASSIS_ROUTE_START_RAMP_MS == 0U) {
+        return 1.0f;
+    }
+    if ((uint32_t)(now - chassis_route_runner_diag.ramp_started_ms) >=
+        CHASSIS_ROUTE_START_RAMP_MS) {
+        return 1.0f;
+    }
+    elapsed_ratio = (float)(now - chassis_route_runner_diag.ramp_started_ms) /
+                    (float)CHASSIS_ROUTE_START_RAMP_MS;
+    return CHASSIS_ROUTE_START_RAMP_INITIAL_RATIO +
+           (1.0f - CHASSIS_ROUTE_START_RAMP_INITIAL_RATIO) * elapsed_ratio;
+}
+
+/** @brief 对路线基础XY和航向修正使用同一比例提交，避免斜坡内改变运动向量。 */
+static uint8_t ChassisRouteRunner_Submit(float heading_w, float speed_scale)
+{
+    return Chassis_MoveConstant(resolved_segment.internal_vx_rpm * speed_scale,
+                                resolved_segment.internal_vy_rpm * speed_scale,
+                                heading_w * speed_scale);
 }
 
 /**
@@ -78,7 +109,7 @@ static float ChassisRouteRunner_UpdateProgress(void)
 }
 
 /**
- * @brief 完成路线解析、航向锁定、计数清零并提交唯一一次启动命令。
+ * @brief 对已解析路线锁定起步航向、计数清零并提交唯一一次启动命令。
  *
  * 任一前置条件失败都调用统一停车出口，成功后进入RUN_ONCE。
  */
@@ -86,22 +117,11 @@ static void ChassisRouteRunner_Start(void)
 {
     uint32_t index;
     float heading_w = 0.0f;
-    ChassisRouteResolveStatus status = ChassisRoute_ResolveSegment(
-        &route_segment, &resolved_segment);
-
-    chassis_route_runner_diag.resolve_status = (uint32_t)status;
-    if (status != CHASSIS_ROUTE_RESOLVE_OK) {
-        ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_RESOLVE_FAILED);
-        return;
-    }
     if (ChassisHeading_ArmCurrent() == 0U) {
         ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_HEADING_ARM);
         return;
     }
-    if (ChassisHeading_SetTarget(resolved_segment.target_heading_degrees) == 0U) {
-        ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_HEADING_TARGET);
-        return;
-    }
+    /* 当前厘米直行段保持起步瞬间Yaw；不得用段内的历史0度字段覆盖它。 */
     if (ChassisHeading_Compute(&heading_w) == 0U) {
         ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_HEADING_FAULT);
         return;
@@ -111,43 +131,56 @@ static void ChassisRouteRunner_Start(void)
         Motor_ResetStepCount((MotorId)index);
         Motor_SetStepLimit((MotorId)index, 0U);
     }
-    if (Chassis_MoveConstant(resolved_segment.internal_vx_rpm,
-                             resolved_segment.internal_vy_rpm,
-                             heading_w) == 0U) {
-        ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_MOTOR_SUBMIT);
-        return;
-    }
-
     chassis_route_runner_diag.target_steps = resolved_segment.target_steps;
     chassis_route_runner_diag.expected_run_ms =
         ChassisRouteRunner_ExpectedRunMs();
-    chassis_route_runner_diag.last_heading_w_rpm = heading_w;
-    chassis_route_runner_diag.command_submissions = 1U;
     chassis_route_runner_diag.run_started_ms = HAL_GetTick();
-    chassis_route_runner_diag.state_started_ms = HAL_GetTick();
-    chassis_route_runner_diag.state = CHASSIS_ROUTE_RUNNER_RUN_ONCE;
+    chassis_route_runner_diag.ramp_started_ms = chassis_route_runner_diag.run_started_ms;
+    chassis_route_runner_diag.state_started_ms = chassis_route_runner_diag.run_started_ms;
+    chassis_route_runner_diag.state = CHASSIS_ROUTE_RUNNER_START_RAMP;
+    chassis_route_runner_diag.last_base_speed_scale =
+        ChassisRouteRunner_StartRampScale(chassis_route_runner_diag.run_started_ms);
+    if (ChassisRouteRunner_Submit(heading_w,
+                                  chassis_route_runner_diag.last_base_speed_scale) == 0U) {
+        ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_MOTOR_SUBMIT);
+        return;
+    }
+    chassis_route_runner_diag.last_heading_w_rpm =
+        heading_w * chassis_route_runner_diag.last_base_speed_scale;
+    chassis_route_runner_diag.command_submissions = 1U;
     last_applied_control_update = chassis_heading_diag.control_updates;
 }
 
 /**
- * @brief 复制单段路线配置并在四轮全停时进入BOOT_SAFE。
- * @param segment 待运行的单段路线；空指针会在首轮Service锁存失败。
+ * @brief 校验并复制单段路线配置，在四轮全停时进入BOOT_SAFE。
+ * @param segment 待运行的单段路线。
  */
-void ChassisRouteRunner_Init(const ChassisRouteSegment *segment)
+uint8_t ChassisRouteRunner_Init(const ChassisRouteSegment *segment)
 {
     const ChassisRouteRunnerDiagnostics initial = {0};
+    ChassisRouteResolveStatus status;
+
+    if (segment == 0 ||
+        (route_segment_present != 0U &&
+         chassis_route_runner_diag.state != CHASSIS_ROUTE_RUNNER_STOP_LATCHED)) {
+        return 0U;
+    }
+    status = ChassisRoute_ResolveSegment(segment, &resolved_segment);
+    if (status != CHASSIS_ROUTE_RESOLVE_OK) {
+        return 0U;
+    }
 
     Chassis_Stop();
     ChassisHeading_EndMotion();
     chassis_route_runner_diag = initial;
     chassis_route_runner_diag.state = CHASSIS_ROUTE_RUNNER_BOOT_SAFE;
     chassis_route_runner_diag.state_started_ms = HAL_GetTick();
-    route_segment_present = (segment != 0) ? 1U : 0U;
-    if (segment != 0) {
-        route_segment = *segment;
-        chassis_route_runner_diag.target_distance_cm = segment->distance_cm;
-    }
+    route_segment_present = 1U;
+    route_segment = *segment;
+    chassis_route_runner_diag.resolve_status = (uint32_t)status;
+    chassis_route_runner_diag.target_distance_cm = segment->distance_cm;
     last_applied_control_update = 0U;
+    return 1U;
 }
 
 /**
@@ -189,6 +222,7 @@ void ChassisRouteRunner_Service(void)
         ChassisRouteRunner_Start();
         break;
 
+    case CHASSIS_ROUTE_RUNNER_START_RAMP:
     case CHASSIS_ROUTE_RUNNER_RUN_ONCE:
         /* 先判断距离/超时，再消费新航向更新；任一失败都统一停车。 */
         directed_steps = ChassisRouteRunner_UpdateProgress();
@@ -209,15 +243,20 @@ void ChassisRouteRunner_Service(void)
         }
         if (chassis_heading_diag.control_updates !=
             last_applied_control_update) {
-            if (Chassis_MoveConstant(resolved_segment.internal_vx_rpm,
-                                     resolved_segment.internal_vy_rpm,
-                                     heading_w) == 0U) {
+            const float speed_scale = ChassisRouteRunner_StartRampScale(now);
+            if (ChassisRouteRunner_Submit(heading_w, speed_scale) == 0U) {
                 ChassisRouteRunner_Stop(CHASSIS_ROUTE_STOP_MOTOR_SUBMIT);
                 break;
             }
-            chassis_route_runner_diag.last_heading_w_rpm = heading_w;
+            chassis_route_runner_diag.last_heading_w_rpm = heading_w * speed_scale;
+            chassis_route_runner_diag.last_base_speed_scale = speed_scale;
             chassis_route_runner_diag.command_submissions++;
             last_applied_control_update = chassis_heading_diag.control_updates;
+        }
+        if (chassis_route_runner_diag.state == CHASSIS_ROUTE_RUNNER_START_RAMP &&
+            ChassisRouteRunner_StartRampScale(now) >= 1.0f) {
+            chassis_route_runner_diag.state = CHASSIS_ROUTE_RUNNER_RUN_ONCE;
+            chassis_route_runner_diag.state_started_ms = now;
         }
         break;
 

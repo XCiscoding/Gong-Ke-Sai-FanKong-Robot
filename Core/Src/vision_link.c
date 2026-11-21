@@ -4,11 +4,21 @@
 static uint8_t rx_frame[VISION_LINK_FRAME_SIZE];
 static uint8_t rx_length;
 static uint8_t request_sent;
+static uint8_t requested_mode;
 static uint8_t sequence_initialized;
 static uint32_t last_request_ms;
 static VisionLinkMessage pending_message;
 static uint8_t message_pending;
 static VisionLinkDiagnostics link_diag;
+static uint8_t receive_only;
+
+static uint8_t AckTypeForMode(uint8_t mode)
+{
+    if (mode == VISION_LINK_TYPE_MODE_TRACK) return VISION_LINK_TYPE_ACK_TRACK;
+    if (mode == VISION_LINK_TYPE_MODE_QR) return VISION_LINK_TYPE_ACK_QR;
+    if (mode == VISION_LINK_TYPE_MODE_TARGET) return VISION_LINK_TYPE_ACK_TARGET;
+    return 0U;
+}
 
 static uint8_t CheckByte(uint8_t type, uint8_t sequence,
                          uint8_t data_low, uint8_t data_high)
@@ -101,9 +111,25 @@ static void EndSession(void)
 static void AcceptData(const VisionLinkMessage *message, uint32_t now_ms)
 {
     uint8_t delta;
-    if (!link_diag.link_active) {
-        link_diag.unexpected_frames++;
-        return;
+    if (receive_only != 0U) {
+        if (message->type != VISION_LINK_TYPE_QR_READY) {
+            link_diag.unexpected_frames++;
+            return;
+        }
+    } else {
+        if (!link_diag.link_active) {
+            link_diag.unexpected_frames++;
+            return;
+        }
+        if ((requested_mode == VISION_LINK_TYPE_MODE_QR &&
+             message->type != VISION_LINK_TYPE_QR_READY) ||
+            (requested_mode == VISION_LINK_TYPE_MODE_TARGET) ||
+            (requested_mode == VISION_LINK_TYPE_MODE_TRACK &&
+             message->type != VISION_LINK_TYPE_TRACK &&
+             message->type != VISION_LINK_TYPE_LOST)) {
+            link_diag.unexpected_frames++;
+            return;
+        }
     }
     if (sequence_initialized) {
         delta = (uint8_t)(message->sequence - link_diag.last_sequence);
@@ -118,14 +144,17 @@ static void AcceptData(const VisionLinkMessage *message, uint32_t now_ms)
     pending_message = *message;
     message_pending = 1U;
     if (message->type == VISION_LINK_TYPE_TRACK) link_diag.track_frames++;
-    else link_diag.lost_frames++;
+    else if (message->type == VISION_LINK_TYPE_LOST) link_diag.lost_frames++;
 }
 
 static void Dispatch(const VisionLinkMessage *message, uint32_t now_ms)
 {
-    if (message->type == VISION_LINK_TYPE_ACK_TRACK) {
+    if (message->type == VISION_LINK_TYPE_ACK_TRACK ||
+        message->type == VISION_LINK_TYPE_ACK_QR ||
+        message->type == VISION_LINK_TYPE_ACK_TARGET) {
         if (message->data != 0 || !request_sent ||
-            message->sequence != link_diag.request_sequence) {
+            message->sequence != link_diag.request_sequence ||
+            message->type != AckTypeForMode(requested_mode)) {
             link_diag.unexpected_frames++;
             return;
         }
@@ -138,7 +167,8 @@ static void Dispatch(const VisionLinkMessage *message, uint32_t now_ms)
         message_pending = 0U;
         return;
     }
-    if (message->type == VISION_LINK_TYPE_TRACK) {
+    if (message->type == VISION_LINK_TYPE_TRACK ||
+        message->type == VISION_LINK_TYPE_QR_READY) {
         AcceptData(message, now_ms);
         return;
     }
@@ -156,11 +186,12 @@ static void Dispatch(const VisionLinkMessage *message, uint32_t now_ms)
         link_diag.unknown_type++;
 }
 
-static void RequestTrack(uint32_t now_ms)
+static void RequestMode(uint32_t now_ms)
 {
     uint8_t frame[VISION_LINK_FRAME_SIZE];
-    uint8_t next_sequence = (uint8_t)(link_diag.request_sequence + 1U);
-    VisionLink_EncodeFrame(VISION_LINK_TYPE_MODE_TRACK, next_sequence, 0, frame);
+    /* 上位模式命令采用固定序号0，严格对应赛项既有9字节指令帧。 */
+    uint8_t next_sequence = 0U;
+    VisionLink_EncodeFrame(requested_mode, next_sequence, 0, frame);
     if (VisionUart_Send(frame, VISION_LINK_FRAME_SIZE)) {
         link_diag.request_sequence = next_sequence;
         last_request_ms = now_ms;
@@ -173,8 +204,16 @@ void VisionLink_Init(void)
     const VisionLinkDiagnostics empty = {0};
     link_diag = empty;
     rx_length = request_sent = sequence_initialized = message_pending = 0U;
+    receive_only = 0U;
+    requested_mode = VISION_LINK_TYPE_MODE_TRACK;
     last_request_ms = 0U;
     VisionUart_Init();
+}
+
+void VisionLink_EnableReceiveOnly(void)
+{
+    receive_only = 1U;
+    EndSession();
 }
 
 void VisionLink_Service(uint32_t now_ms)
@@ -187,16 +226,30 @@ void VisionLink_Service(uint32_t now_ms)
         if (ParseByte(byte, &message)) Dispatch(&message, now_ms);
     }
 
-    if (link_diag.link_active &&
+    if (receive_only == 0U && link_diag.link_active &&
         (uint32_t)(now_ms - link_diag.last_progress_ms) > VISION_LINK_FRESH_MS) {
         link_diag.link_timeouts++;
         EndSession();
     }
-    if (!link_diag.link_active &&
+    if (receive_only == 0U && !link_diag.link_active &&
         (!request_sent ||
          (uint32_t)(now_ms - last_request_ms) >= VISION_LINK_RETRY_MS)) {
-        RequestTrack(now_ms);
+        RequestMode(now_ms);
     }
+}
+
+uint8_t VisionLink_RequestMode(VisionLinkType mode)
+{
+    if (receive_only != 0U) return 0U;
+    if (mode != VISION_LINK_TYPE_MODE_TRACK &&
+        mode != VISION_LINK_TYPE_MODE_QR &&
+        mode != VISION_LINK_TYPE_MODE_TARGET)
+        return 0U;
+    if (requested_mode != (uint8_t)mode) {
+        requested_mode = (uint8_t)mode;
+        EndSession();
+    }
+    return 1U;
 }
 
 uint8_t VisionLink_TakeMessage(VisionLinkMessage *message)

@@ -50,17 +50,27 @@ extern "C" {
 /**
  * @brief 当前PBRoBot构建的应用配置。
  *
- * 五个值必须且只能有一个为1。当前选择物理X+厘米路线候选；已实物通过的
- * 四路脉冲档、IMU短回归档和恒速HOLD档保留为回归配置。
+ * 八个值必须且只能有一个为1。被动视觉报告档只初始化K230链路与UART4
+ * 报告，绝不初始化任何底盘或电机；厘米路线测试用数据表描述单段或多段命令，
+ * 不按物理方向派生profile；已实物通过的四路脉冲档、IMU短回归档和恒速
+ * HOLD档保留为回归配置。
  */
 #define APP_PROFILE_STEP_TEST             0U
 #define APP_PROFILE_IMU_SHORT_REGRESSION  0U
 #define APP_PROFILE_CONSTANT_HEADING_HOLD 0U
-#define APP_PROFILE_CM_ROUTE_X_POSITIVE   1U
+#define APP_PROFILE_CM_ROUTE_TEST         1U
+#define APP_PROFILE_VISION_DISTANCE_ALIGN 0U
+#define APP_PROFILE_PASSIVE_VISION_REPORT 0U
+#define APP_PROFILE_ARM_TUNE              0U
+#define APP_PROFILE_ARM_GRASP_CAPTURE     0U
 #define APP_PROFILE_LEGACY_MODULES        0U
 
 #if (APP_PROFILE_STEP_TEST + APP_PROFILE_IMU_SHORT_REGRESSION + \
-     APP_PROFILE_CONSTANT_HEADING_HOLD + APP_PROFILE_CM_ROUTE_X_POSITIVE + \
+     APP_PROFILE_CONSTANT_HEADING_HOLD + APP_PROFILE_CM_ROUTE_TEST + \
+     APP_PROFILE_VISION_DISTANCE_ALIGN + \
+     APP_PROFILE_PASSIVE_VISION_REPORT + \
+     APP_PROFILE_ARM_TUNE + \
+     APP_PROFILE_ARM_GRASP_CAPTURE + \
      APP_PROFILE_LEGACY_MODULES) != 1U
 #error "Exactly one PBRoBot application profile must be selected"
 #endif
@@ -74,7 +84,7 @@ extern "C" {
  */
 #define CHASSIS_USE_STEP_BACKEND  \
   (APP_PROFILE_STEP_TEST || APP_PROFILE_CONSTANT_HEADING_HOLD || \
-   APP_PROFILE_CM_ROUTE_X_POSITIVE)
+   APP_PROFILE_CM_ROUTE_TEST || APP_PROFILE_VISION_DISTANCE_ALIGN)
 
 /* USER CODE END EM */
 

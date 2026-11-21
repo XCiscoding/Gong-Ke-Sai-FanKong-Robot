@@ -18,14 +18,12 @@ typedef struct {
     ChassisRouteDirection direction;
     float distance_cm;
     float speed_rpm;
-    float target_heading_degrees;
 } ChassisRouteSegment;
 
 /** 路线层解析后交给底盘控制层的内部命令，不包含HAL或电机引脚。 */
 typedef struct {
     float internal_vx_rpm;
     float internal_vy_rpm;
-    float target_heading_degrees;
     ChassisDistanceAxis distance_axis;
     ChassisDistanceProjection step_projection;
     int8_t distance_sign;
@@ -37,15 +35,14 @@ typedef enum {
     CHASSIS_ROUTE_RESOLVE_INVALID_ARGUMENT,
     CHASSIS_ROUTE_RESOLVE_INVALID_DISTANCE,
     CHASSIS_ROUTE_RESOLVE_INVALID_SPEED,
-    CHASSIS_ROUTE_RESOLVE_INVALID_HEADING,
-    CHASSIS_ROUTE_RESOLVE_DIRECTION_UNVERIFIED
+    CHASSIS_ROUTE_RESOLVE_INVALID_DIRECTION
 } ChassisRouteResolveStatus;
 
 /**
  * @brief 把用户坐标中的厘米路线段解析为内部vx/vy与目标平移脉冲。
  *
- * 只有取得实物方向证据并在chassis_config.h显式放行的方向才能成功。
- * 本函数不启动电机、不读取IMU，也不决定状态机何时切换下一段。
+ * 方向只决定内部XY映射；实体方向验收属于项目证据，不能成为方向专用
+ * 固件权限门。本函数不启动电机、不读取IMU，也不决定状态机何时切换下一段。
  */
 ChassisRouteResolveStatus ChassisRoute_ResolveSegment(
     const ChassisRouteSegment *segment,

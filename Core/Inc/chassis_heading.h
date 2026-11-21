@@ -42,7 +42,7 @@
 #endif
 #if CHASSIS_HEADING_LOW_SPEED_TEST
 #define CHASSIS_HEADING_LIMIT_RPM     15.0f
-#define CHASSIS_HEADING_HOLD_ERROR_LIMIT_TENTHS 350
+#define CHASSIS_HEADING_HOLD_ERROR_LIMIT_TENTHS 400
 #else
 #define CHASSIS_HEADING_LIMIT_RPM     30.0f
 #endif
@@ -98,7 +98,7 @@ void ChassisHeading_Service(void);
 uint8_t ChassisHeading_ArmCurrent(void);
 
 /**
- * @brief 检查IMU新鲜度、接收错误、35°保护线和10ms调度间隔。
+ * @brief 检查IMU新鲜度、接收错误、40°保护线和10ms调度间隔。
  * @return 1表示可以继续控制；0表示已保持等待或进入锁存故障。
  */
 uint8_t ChassisHeading_IsHealthy(void);

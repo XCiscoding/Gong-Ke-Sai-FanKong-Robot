@@ -13,9 +13,14 @@
 
 typedef enum {
     VISION_LINK_TYPE_MODE_TRACK = 0x01,
+    VISION_LINK_TYPE_MODE_QR = 0x03,
+    VISION_LINK_TYPE_MODE_TARGET = 0x04,
     VISION_LINK_TYPE_TRACK = 0x10,
     VISION_LINK_TYPE_LOST = 0x11,
-    VISION_LINK_TYPE_ACK_TRACK = 0x81
+    VISION_LINK_TYPE_QR_READY = 0x12,
+    VISION_LINK_TYPE_ACK_TRACK = 0x81,
+    VISION_LINK_TYPE_ACK_QR = 0x82,
+    VISION_LINK_TYPE_ACK_TARGET = 0x83
 } VisionLinkType;
 
 typedef struct {
@@ -44,7 +49,9 @@ typedef struct {
 } VisionLinkDiagnostics;
 
 void VisionLink_Init(void);
+void VisionLink_EnableReceiveOnly(void);
 void VisionLink_Service(uint32_t now_ms);
+uint8_t VisionLink_RequestMode(VisionLinkType mode);
 uint8_t VisionLink_TakeMessage(VisionLinkMessage *message);
 uint8_t VisionLink_IsActive(void);
 void VisionLink_GetDiagnostics(VisionLinkDiagnostics *diagnostics);

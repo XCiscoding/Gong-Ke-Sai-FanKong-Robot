@@ -150,7 +150,7 @@ uint8_t ChassisHeading_IsHealthy(void)
         chassis_heading_diag.target_yaw_tenths, data.yaw_tenths);
 #if CHASSIS_HEADING_LOW_SPEED_TEST && !IMU_ONLY_TEST_ACTIVE
     /* Dynamic HOLD was accepted by physical observation up to roughly 30 deg;
-     * the estimate was not instrumented. Keep a 35 deg emergency guard only
+     * the estimate was not instrumented. Keep a 40 deg emergency guard only
      * in HOLD, and never reinterpret it as a measured performance limit. */
     if (chassis_heading_diag.mode == HEADING_MODE_HOLD &&
         (chassis_heading_diag.error_tenths > CHASSIS_HEADING_HOLD_ERROR_LIMIT_TENTHS ||

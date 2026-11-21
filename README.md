@@ -8,8 +8,8 @@ STM32F407VETx。Git中的源码提交、ARM构建、烧录映像和实车结果�
 
 ```text
 任务编排层
-  main.c / chassis_route_runner.c
-  选择当前运行档；推进单段状态机，决定继续或统一停车
+  main.c / mission.c / chassis_route_runner.c
+  选择运行档；按任务表推进路线段，完成或故障时统一停车
         ↓ ChassisRouteSegment（方向、cm、RPM、目标航向）
 
 路线与底盘控制层
@@ -60,8 +60,8 @@ STM32F407VETx。Git中的源码提交、ARM构建、烧录映像和实车结果�
 厘米路线状态固定为：
 
 ```text
-BOOT_SAFE → STABILIZE → RUN_ONCE → STOP_LATCHED
-    全停       等IMU建零      距离/航向控制       全停且不自动重启
+BOOT_SAFE → STABILIZE → START_RAMP → RUN_ONCE → STOP_LATCHED
+    全停       等IMU建零      起步斜坡      距离/航向控制     全停且不自动重启
 ```
 
 ## 厘米距离参数
@@ -80,10 +80,16 @@ BOOT_SAFE → STABILIZE → RUN_ONCE → STOP_LATCHED
 
 ## 当前方向证据边界
 
-新直脉冲后端目前只确认：内部`vy > 0`时，车辆按用户坐标沿物理X+移动。
-因此`chassis_route.c`当前只放行物理X+；X−、Y+、Y−会返回
-`CHASSIS_ROUTE_RESOLVE_DIRECTION_UNVERIFIED`。每获得一个新的实物方向证据，
-才在`chassis_config.h`开放对应方向。
+`chassis_route.c` 接收四个有效方向，分别使用同轴的内部 X/Y 命令与步数投影。
+当前实物记录确认了 Y+ 对应内部 `vy > 0`，并完成 Y+ 的定距复验。X+ 校准值、
+其他方向与整条路线的实车表现仍待复验。
+
+当前厘米路线由 `Core/Src/mission.c` 的七段任务表驱动。归档保留工作区中的
+命令值，任务表与主机测试的参数一致只证明软件合同成立。里程依据是发出的
+STEP 脉冲，地面实际里程仍需独立测量。
+
+独立视觉距离对齐档中，移动时丢帧会停车，上一段路线运行器仍保留活动状态。
+下一次申请移动可能被拒绝，该档的丢帧后重新启动尚未验证。
 
 ## 验证入口
 

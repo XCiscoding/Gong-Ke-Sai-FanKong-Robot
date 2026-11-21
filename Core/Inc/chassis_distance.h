@@ -53,7 +53,7 @@ float ChassisDistance_ProjectSteps(
  * @return 带方向的厘米值；参数无效返回0。
  *
  * 物理轴决定使用X或Y标定系数，projection决定四轮怎样相加减。两者分开，
- * 因为当前实车“物理X+”映射到历史混控的vy+，不能把坐标命名和混控公式混为一层。
+ * 因为当前实车“物理Y+”映射到历史混控的vy+，不能把坐标命名和混控公式混为一层。
  */
 float ChassisDistance_StepsToCm(
     ChassisDistanceAxis axis,
